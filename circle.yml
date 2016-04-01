@@ -3,6 +3,8 @@ general:
     - "target"
 
 machine:
+  pre:
+    - make -f docker-scripts/Makefile ci-install-docker
   python:
   services:
     - docker
@@ -15,9 +17,12 @@ dependencies:
     - docker info
 
 test:
+  pre:
+    - make hook-gitter
   override:
-    - case $CIRCLE_NODE_INDEX in 0) make test-py27 ;; 1) make test-py34 ;; esac:
+    - make test-py27:
+        parallel: true
+    - make test-py34:
         parallel: true
   post:
     - make ci-publish-junit
-    - make hook-gitter
