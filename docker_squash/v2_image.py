@@ -5,7 +5,7 @@ import os
 import shutil
 
 from collections import OrderedDict
-from docker_scripts.image import Image
+from docker_squash.image import Image
 
 
 class V2Image(Image):
@@ -107,7 +107,10 @@ class V2Image(Image):
     def _generate_manifest_metadata(self, image_id, image_name, image_tag, old_image_manifest, layer_paths_to_move, layer_path_id=None):
         manifest = OrderedDict()
         manifest['Config'] = "%s.json" % image_id
-        manifest['RepoTags'] = ["%s:%s" % (image_name, image_tag)]
+
+        if image_name and image_tag:
+            manifest['RepoTags'] = ["%s:%s" % (image_name, image_tag)]
+
         manifest['Layers'] = old_image_manifest[
             'Layers'][:len(layer_paths_to_move)]
 
@@ -185,15 +188,29 @@ class V2Image(Image):
         diff_ids = []
 
         for path in self.layer_paths_to_move:
-            with open(os.path.join(self.old_image_dir, path, "layer.tar"), 'rb') as f:
-                # Make this more efficient, layers can be big!
-                diff_ids.append(hashlib.sha256(f.read()).hexdigest())
+            sha256 = self._compute_sha256(os.path.join(self.old_image_dir, path, "layer.tar"))
+            diff_ids.append(sha256)
 
         if self.layer_paths_to_squash:
-            with open(os.path.join(self.squashed_dir, "layer.tar"), 'rb') as f:
-                diff_ids.append(hashlib.sha256(f.read()).hexdigest())
+            sha256 = self._compute_sha256(os.path.join(self.squashed_dir, "layer.tar"))
+            diff_ids.append(sha256)
 
         return diff_ids
+
+    def _compute_sha256(self, layer_tar):
+        sha256 = hashlib.sha256()
+
+        with open(layer_tar, 'rb') as f:
+            while True:
+                # Read in 10MB chunks
+                data = f.read(10485760)
+
+                if not data:
+                    break
+
+                sha256.update(data)
+
+        return sha256.hexdigest()
 
     def _generate_squashed_layer_path_id(self):
         """
@@ -277,10 +294,10 @@ class V2Image(Image):
         if self.layer_paths_to_move:
             config['parent'] = self.layer_paths_to_move[-1]
         else:
-            del config['parent']
+            config.pop("parent", None)
         # Update 'id' - it should be the path to the layer
         config['id'] = layer_path_id
-        del config['container']
+        config.pop("container", None)
         return config
 
     def _generate_image_metadata(self):
@@ -291,7 +308,7 @@ class V2Image(Image):
         metadata['created'] = self.date
 
         # Remove unnecessary or old fields
-        del metadata['container']
+        metadata.pop("container", None)
 
         # Remove squashed layers from history
         metadata['history'] = metadata['history'][:len(self.layers_to_move)]

@@ -3,10 +3,10 @@ import mock
 import six
 import tarfile
 
-from docker_scripts.squash import Squash
-from docker_scripts.image import Image
-from docker_scripts.v1_image import V1Image
-from docker_scripts.errors import SquashError
+from docker_squash.squash import Squash
+from docker_squash.image import Image
+from docker_squash.v1_image import V1Image
+from docker_squash.errors import SquashError
 
 
 class TestSkippingFiles(unittest.TestCase):
@@ -19,23 +19,28 @@ class TestSkippingFiles(unittest.TestCase):
 
     def test_should_skip_exact_files(self):
         ret = self.squash._file_should_be_skipped(
-            '/opt/webserver/something', ['/opt/eap', '/opt/webserver/something'])
-        self.assertTrue(ret)
+            '/opt/webserver/something', [['/opt/eap', '/opt/webserver/something']])
+        self.assertEqual(ret, 1)
 
     def test_should_not_skip_file_not_in_path_to_skip(self):
         ret = self.squash._file_should_be_skipped(
-            '/opt/webserver/tmp', ['/opt/eap', '/opt/webserver/something'])
-        self.assertFalse(ret)
+            '/opt/webserver/tmp', [['/opt/eap', '/opt/webserver/something']])
+        self.assertEqual(ret, 0)
 
     def test_should_not_skip_the_file_that_name_is_similar_to_skipped_path(self):
         ret = self.squash._file_should_be_skipped(
-            '/opt/webserver/tmp1234', ['/opt/eap', '/opt/webserver/tmp'])
-        self.assertFalse(ret)
+            '/opt/webserver/tmp1234', [['/opt/eap', '/opt/webserver/tmp']])
+        self.assertEqual(ret, 0)
 
     def test_should_skip_files_in_subdirectory(self):
         ret = self.squash._file_should_be_skipped(
-            '/opt/webserver/tmp/abc', ['/opt/eap', '/opt/webserver/tmp'])
-        self.assertTrue(ret)
+            '/opt/webserver/tmp/abc', [['/opt/eap', '/opt/webserver/tmp']])
+        self.assertEqual(ret, 1)
+
+    def test_should_skip_files_in_other_layer(self):
+        ret = self.squash._file_should_be_skipped(
+            '/opt/webserver/tmp/abc', [['a'], ['b'], ['/opt/eap', '/opt/webserver/tmp']])
+        self.assertEqual(ret, 3)
 
 
 class TestParseImageName(unittest.TestCase):
@@ -67,13 +72,13 @@ class TestPrepareTemporaryDirectory(unittest.TestCase):
         self.image = "whatever"
         self.squash = Image(self.log, self.docker_client, self.image, None)
 
-    @mock.patch('docker_scripts.image.tempfile')
+    @mock.patch('docker_squash.image.tempfile')
     def test_create_tmp_directory_if_not_provided(self, mock_tempfile):
         self.squash._prepare_tmp_directory(None)
         mock_tempfile.mkdtemp.assert_called_with(prefix="docker-squash-")
 
-    @mock.patch('docker_scripts.image.tempfile')
-    @mock.patch('docker_scripts.image.os.path.exists', return_value=True)
+    @mock.patch('docker_squash.image.tempfile')
+    @mock.patch('docker_squash.image.os.path.exists', return_value=True)
     def test_should_raise_if_directory_already_exists(self, mock_path, mock_tempfile):
         with self.assertRaises(SquashError) as cm:
             self.squash._prepare_tmp_directory('tmp')
@@ -82,8 +87,8 @@ class TestPrepareTemporaryDirectory(unittest.TestCase):
         mock_path.assert_called_with('tmp')
         self.assertTrue(len(mock_tempfile.mkdtemp.mock_calls) == 0)
 
-    @mock.patch('docker_scripts.image.os.path.exists', return_value=False)
-    @mock.patch('docker_scripts.image.os.makedirs', return_value=False)
+    @mock.patch('docker_squash.image.os.path.exists', return_value=False)
+    @mock.patch('docker_squash.image.os.makedirs', return_value=False)
     def test_should_use_provided_tmp_dir(self, mock_makedirs, mock_path):
         self.assertEqual(self.squash._prepare_tmp_directory('tmp'), 'tmp')
         mock_path.assert_called_with('tmp')
@@ -110,6 +115,7 @@ class TestPrepareLayersToSquash(unittest.TestCase):
         self.assertEquals(self.squash._layers_to_squash(
             ['abc', 'def', 'ghi', 'jkl'], 'asdasdasd'), (['abc', 'def', 'ghi', 'jkl'], []))
 
+
 class TestGenerateV1ImageId(unittest.TestCase):
 
     def setUp(self):
@@ -123,7 +129,7 @@ class TestGenerateV1ImageId(unittest.TestCase):
         self.assertEquals(len(image_id), 64)
         self.assertEquals(isinstance(image_id, str), True)
 
-    @mock.patch('docker_scripts.image.hashlib.sha256')
+    @mock.patch('docker_squash.image.hashlib.sha256')
     def test_should_generate_id_that_is_not_integer_shen_shortened(self, mock_random):
         first_pass = mock.Mock()
         first_pass.hexdigest.return_value = '12683859385754f68e0652f13eb771725feff397144cd60886cb5f9800ed3e22'
@@ -151,7 +157,8 @@ class TestGenerateRepositoriesJSON(unittest.TestCase):
             self.squash._generate_repositories_json(
                 'file', image_id, 'name', 'tag')
 
-            self.assertIn(mock.call().write('{"name":{"tag":"12323dferwt4awefq23rasf"}}'), mock_file.mock_calls)
+            self.assertIn(mock.call().write(
+                '{"name":{"tag":"12323dferwt4awefq23rasf"}}'), mock_file.mock_calls)
             self.assertIn(mock.call().write('\n'), mock_file.mock_calls)
 
     def test_handle_empty_image_id(self):
@@ -163,6 +170,11 @@ class TestGenerateRepositoriesJSON(unittest.TestCase):
             self.assertEquals(
                 str(cm.exception), 'Provided image id cannot be null')
             mock_file().write.assert_not_called()
+
+    def test_should_not_generate_repositories_if_name_and_tag_is_missing(self):
+        self.squash._generate_repositories_json('file', 'abcd', None, None)
+        self.log.debug.assert_called_with(
+            "No name and tag provided for the image, skipping generating repositories file")
 
 
 class TestMarkerFiles(unittest.TestCase):
@@ -217,17 +229,17 @@ class TestAddMarkers(unittest.TestCase):
         self.squash = Image(self.log, self.docker_client, self.image, None)
 
     def test_should_not_fail_with_empty_list_of_markers_to_add(self):
-        self.squash._add_markers({}, None, None, None)
+        self.squash._add_markers({}, None, None, [])
 
     def test_should_add_all_marker_files_to_empty_tar(self):
         tar = mock.Mock()
+        tar.getnames.return_value = []
 
         marker_1 = mock.Mock()
         type(marker_1).name = mock.PropertyMock(return_value='.wh.marker_1')
 
         markers = {marker_1: 'file'}
-        with mock.patch('docker_scripts.image.Image._files_in_layers', return_value={}):
-            self.squash._add_markers(markers, tar, None, None)
+        self.squash._add_markers(markers, tar, {}, [])
 
         self.assertTrue(len(tar.addfile.mock_calls) == 1)
         tar_info, marker_file = tar.addfile.call_args[0]
@@ -235,8 +247,9 @@ class TestAddMarkers(unittest.TestCase):
         self.assertTrue(marker_file == 'file')
         self.assertTrue(tar_info.isfile())
 
-    def test_should_skip_a_marker_file_if_file_is_in_unsquashed_layers(self):
+    def test_should_add_all_marker_files_to_empty_tar_besides_what_should_be_skipped(self):
         tar = mock.Mock()
+        tar.getnames.return_value = []
 
         marker_1 = mock.Mock()
         type(marker_1).name = mock.PropertyMock(return_value='.wh.marker_1')
@@ -244,17 +257,39 @@ class TestAddMarkers(unittest.TestCase):
         type(marker_2).name = mock.PropertyMock(return_value='.wh.marker_2')
 
         markers = {marker_1: 'file1', marker_2: 'file2'}
-        with mock.patch('docker_scripts.image.Image._files_in_layers', return_value={'1234layerdid': ['some/file', 'marker_1']}):
-            self.squash._add_markers(markers, tar, None, None)
+        self.squash._add_markers(markers, tar, {'1234layerdid': [
+                                 '/marker_1', '/marker_2']}, [['/marker_1']])
 
-        self.assertTrue(len(tar.addfile.mock_calls) == 1)
+        self.assertEqual(len(tar.addfile.mock_calls), 1)
         tar_info, marker_file = tar.addfile.call_args[0]
         self.assertIsInstance(tar_info, tarfile.TarInfo)
         self.assertTrue(marker_file == 'file2')
         self.assertTrue(tar_info.isfile())
 
+    def test_should_skip_a_marker_file_if_file_is_in_unsquashed_layers(self):
+        tar = mock.Mock()
+        # List of files in the squashed tar
+        tar.getnames.return_value = ['marker_1']
+
+        marker_1 = mock.Mock()
+        type(marker_1).name = mock.PropertyMock(return_value='.wh.marker_1')
+        marker_2 = mock.Mock()
+        type(marker_2).name = mock.PropertyMock(return_value='.wh.marker_2')
+        # List of marker files to add back
+        markers = {marker_1: 'marker_1', marker_2: 'marker_2'}
+        # List of files in all layers to be moved
+        files_in_moved_layers = {'1234layerdid': ['/some/file', '/marker_2']}
+        self.squash._add_markers(markers, tar, files_in_moved_layers, [])
+
+        self.assertEqual(len(tar.addfile.mock_calls), 1)
+        tar_info, marker_file = tar.addfile.call_args[0]
+        self.assertIsInstance(tar_info, tarfile.TarInfo)
+        self.assertTrue(marker_file == 'marker_2')
+        self.assertTrue(tar_info.isfile())
+
     def test_should_not_add_any_marker_files(self):
         tar = mock.Mock()
+        tar.getnames.return_value = ['marker_1', 'marker_2']
 
         marker_1 = mock.Mock()
         type(marker_1).name = mock.PropertyMock(return_value='.wh.marker_1')
@@ -262,29 +297,98 @@ class TestAddMarkers(unittest.TestCase):
         type(marker_2).name = mock.PropertyMock(return_value='.wh.marker_2')
 
         markers = {marker_1: 'file1', marker_2: 'file2'}
-        with mock.patch('docker_scripts.image.Image._files_in_layers', return_value={'1234layerdid': ['some/file', 'marker_1', 'marker_2']}):
-            self.squash._add_markers(markers, tar, None, None)
+        self.squash._add_markers(markers, tar, {'1234layerdid': [
+                                 'some/file', 'marker_1', 'marker_2']}, [])
 
         self.assertTrue(len(tar.addfile.mock_calls) == 0)
 
-class TestGeneral(unittest.TestCase):
+    # https://github.com/goldmann/docker-squash/issues/108
+    def test_should_add_marker_file_when_tar_has_prefixed_entries(self):
+        tar = mock.Mock()
+        # Files already in tar
+        tar.getnames.return_value = ['./abc', './def']
+
+        marker_1 = mock.Mock()
+        type(marker_1).name = mock.PropertyMock(return_value='.wh.some/file')
+        marker_2 = mock.Mock()
+        type(marker_2).name = mock.PropertyMock(return_value='.wh.file2')
+
+        markers = {marker_1: 'filecontent1', marker_2: 'filecontent2'}
+
+        # List of layers to move (and files in these layers), already normalized
+        self.squash._add_markers(markers, tar, {'1234layerdid': [
+                                 '/some/file', '/other/file', '/stuff']}, [])
+
+        self.assertEqual(len(tar.addfile.mock_calls), 1)
+        tar_info, marker_file = tar.addfile.call_args[0]
+        self.assertIsInstance(tar_info, tarfile.TarInfo)
+        # We need to add the marker file because we need to
+        # override the already existing file
+        self.assertEqual(marker_file, 'filecontent1')
+        self.assertTrue(tar_info.isfile())
+
+
+class TestReduceMarkers(unittest.TestCase):
 
     def setUp(self):
-        self.log = mock.Mock()
         self.docker_client = mock.Mock()
-        self.docker_client.version.return_value = {'GitCommit': "commit/9.9.9", 'ApiVersion': "9.99"}
+        self.log = mock.Mock()
+        self.image = "whatever"
+        self.squash = Image(self.log, self.docker_client, self.image, None)
 
-    def test_handle_case_when_no_image_is_provided(self):
-        squash = Squash(self.log, None, self.docker_client)
+    def test_should_not_reduce_any_marker_files(self):
+        marker_1 = mock.Mock()
+        type(marker_1).name = mock.PropertyMock(return_value='.wh.some/file')
+        marker_2 = mock.Mock()
+        type(marker_2).name = mock.PropertyMock(return_value='.wh.file2')
+
+        markers = {marker_1: 'filecontent1', marker_2: 'filecontent2'}
+
+        self.squash._reduce(markers)
+
+        assert len(markers) == 2
+        assert markers[marker_1] == 'filecontent1'
+        assert markers[marker_2] == 'filecontent2'
+
+    def test_should_reduce_marker_files(self):
+        marker_1 = mock.Mock()
+        type(marker_1).name = mock.PropertyMock(return_value='opt/.wh.testing')
+        marker_2 = mock.Mock()
+        type(marker_2).name = mock.PropertyMock(
+            return_value='opt/testing/something/.wh.file')
+        marker_3 = mock.Mock()
+        type(marker_3).name = mock.PropertyMock(
+            return_value='opt/testing/something/.wh.other_file')
+
+        markers = {marker_1: 'filecontent1',
+                   marker_2: 'filecontent2', marker_3: 'filecontent3'}
+
+        self.squash._reduce(markers)
+
+        assert len(markers) == 1
+        assert markers[marker_1] == 'filecontent1'
+
+
+class TestPathHierarchy(unittest.TestCase):
+    def setUp(self):
+        self.docker_client = mock.Mock()
+        self.log = mock.Mock()
+        self.image = "whatever"
+        self.squash = Image(self.log, self.docker_client, self.image, None)
+
+    def test_should_prepare_path_hierarchy(self):
+        assert self.squash._path_hierarchy('/opt/testing/some/dir/structure/file') == [
+            '/opt/testing/some/dir/structure', '/opt/testing/some/dir', '/opt/testing/some', '/opt/testing', '/opt', '/']
+
+    def test_should_handle_root(self):
+        assert self.squash._path_hierarchy('/') == ['/']
+
+    def test_should_handle_empty(self):
         with self.assertRaises(SquashError) as cm:
-            squash.run()
+            self.squash._path_hierarchy('')
         self.assertEquals(
-            str(cm.exception), "Image is not provided")
+            str(cm.exception), "No path provided to create the hierarchy for")
 
-    def test_exit_if_no_output_path_provided_and_loading_is_disabled_too(self):
-        squash = Squash(self.log, 'image', self.docker_client, load_image=False, output_path=None)
-        squash.run()
-        self.log.warn.assert_called_with("No output path specified and loading into Docker is not selected either; squashed image would not accessible, proceeding with squashing doesn't make sense")
 
 if __name__ == '__main__':
     unittest.main()

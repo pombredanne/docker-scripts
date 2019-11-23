@@ -3,7 +3,7 @@ import os
 import random
 import shutil
 
-from docker_scripts.image import Image
+from docker_squash.image import Image
 
 
 class V1Image(Image):
@@ -58,6 +58,13 @@ class V1Image(Image):
             metadata['config']['Image'] = self.squash_id
         else:
             metadata['config'].pop('Image', None)
+
+        if 'parent_id' in metadata and self.squash_id:
+            metadata['parent_id'] = "sha256:%s" % self.squash_id
+        else:
+            metadata.pop('parent_id', None)
+
+        metadata.pop('layer_id', None)
 
         metadata['created'] = self.date
 
